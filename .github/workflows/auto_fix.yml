@@ -6,16 +6,40 @@ on:
     types:
       - completed
 
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
 jobs:
   fix:
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR commit
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Debug GITHUB_TOKEN
+        run: |
+          echo "Token length: ${#GITHUB_TOKEN}"
+
+
       - name: Run Fix Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
         run: |
           python agent.py
+
+      - name: Debug token
+        run: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "❌ GITHUB_TOKEN is NOT set"
+          else
+            echo "✅ GITHUB_TOKEN is set"
+          fi
+

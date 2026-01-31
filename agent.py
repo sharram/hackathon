@@ -77,11 +77,9 @@ class FilesystemTool:
             req.write_text(content + f"\n{dependency}\n")
 
 def commit_and_push_fix(dep: str):
-    # Configure git identity for the bot
     run_git(["git", "config", "user.name", "ci-janitor-bot"])
     run_git(["git", "config", "user.email", "ci-janitor@users.noreply.github.com"])
 
-    # Check if there are changes
     status = subprocess.run(
         ["git", "status", "--porcelain"],
         capture_output=True,
@@ -94,7 +92,14 @@ def commit_and_push_fix(dep: str):
 
     run_git(["git", "add", "requirements.txt"])
     run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {dep}"])
-    run_git(["git", "push"])
+
+    branch = os.environ.get("GITHUB_HEAD_REF")
+    if not branch:
+        raise RuntimeError("GITHUB_HEAD_REF not set; cannot push fix.")
+
+    run_git(["git", "push", "origin", f"HEAD:{branch}"])
+
+
 
 
 # =========================

@@ -3,6 +3,8 @@ import requests
 import zipfile
 import io
 from pathlib import Path
+import re
+
 
 import subprocess
 
@@ -93,9 +95,10 @@ def commit_and_push_fix(dep: str):
     run_git(["git", "add", "requirements.txt"])
     run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {dep}"])
 
-    branch = os.environ.get("GITHUB_HEAD_REF")
+    branch = os.environ.get("PR_BRANCH")
     if not branch:
-        raise RuntimeError("GITHUB_HEAD_REF not set; cannot push fix.")
+        raise RuntimeError("PR_BRANCH not set; cannot push fix.")
+
 
     run_git(["git", "push", "origin", f"HEAD:{branch}"])
 
@@ -115,14 +118,15 @@ class CIFixAgent:
         Decide WHAT is wrong.
         (Pure reasoning, no side effects)
         """
-        if "ModuleNotFoundError" in logs:
-            missing = logs.split("No module named")[-1].strip().strip("'\"")
+        match = re.search(r"No module named ['\"]([^'\"]+)['\"]", logs)
+        if match:
             return {
                 "type": "missing_dependency",
-                "dependency": missing
+                "dependency": match.group(1)
             }
 
         return {"type": "unknown"}
+
 
     def act(self, diagnosis):
         """

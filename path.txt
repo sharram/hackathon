@@ -1,7 +1,9 @@
-demorepo/
+ cifixagent/
+├── app/
+│   └── __init__.py
 ├── agent.py
+├── pytest.ini
 ├── requirements.txt
-└── .github/
-    └── workflows/
-        ├── ci.yml
-        └── auto_fix.yml
+├── tests/
+│   └── test_app.py
+└── .github/workflows/

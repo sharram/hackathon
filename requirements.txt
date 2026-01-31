@@ -1,3 +1,4 @@
 pytest
 # requests is intentionally missing
 
+requests

@@ -118,15 +118,14 @@ class CIFixAgent:
         Decide WHAT is wrong.
         (Pure reasoning, no side effects)
         """
-        match = re.search(r"No module named ['\"]([^'\"]+)['\"]", logs)
-        if match:
+        if "ModuleNotFoundError" in logs:
+            missing = logs.split("No module named")[-1].strip().strip("'\"")
             return {
                 "type": "missing_dependency",
-                "dependency": match.group(1)
+                "dependency": missing
             }
 
         return {"type": "unknown"}
-
 
     def act(self, diagnosis):
         """

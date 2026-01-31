@@ -16,7 +16,7 @@ def run_git(cmd):
     subprocess.run(cmd, check=True)
 
 
-def commit_and_push_fix(dep: str, branch: str):
+def commit_and_push_fix(commit_msg: str, branch: str):
     run_git(["git", "config", "user.name", "ci-janitor-bot"])
     run_git(["git", "config", "user.email", "ci-janitor@users.noreply.github.com"])
 
@@ -30,8 +30,8 @@ def commit_and_push_fix(dep: str, branch: str):
         print("No changes detected, skipping commit.")
         return
 
-    run_git(["git", "add", "requirements.txt"])
-    run_git(["git", "commit", "-m", f"ci-fix: add missing dependency {dep}"])
+    run_git(["git", "add", "-A"])
+    run_git(["git", "commit", "-m", commit_msg])
     run_git(["git", "push", "origin", f"HEAD:{branch}"])
 
 
@@ -43,9 +43,24 @@ def find_missing_dependency(logs: str) -> Optional[str]:
     return m.group(1).strip()
 
 
+def find_missing_file_path(logs: str) -> Optional[str]:
+    # FileNotFoundError: [Errno 2] No such file or directory: 'config/settings.json'
+    m = re.search(r"No such file or directory: ['\"]([^'\"]+)['\"]", logs)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
 def make_log_excerpt(logs: str, max_lines: int = 30, max_chars: int = 1800) -> str:
     lines = logs.splitlines()
-    idx = next((i for i, l in enumerate(lines) if "ModuleNotFoundError" in l), None)
+
+    # Prefer showing around the first helpful error
+    keywords = ["ModuleNotFoundError", "FileNotFoundError", "No such file or directory"]
+    idx = None
+    for k in keywords:
+        idx = next((i for i, l in enumerate(lines) if k in l), None)
+        if idx is not None:
+            break
 
     if idx is None:
         snippet = lines[:max_lines]
@@ -60,6 +75,15 @@ def make_log_excerpt(logs: str, max_lines: int = 30, max_chars: int = 1800) -> s
     return text
 
 
+def get_branch_name() -> str:
+    branch = os.environ.get("PR_BRANCH")
+    if not branch:
+        branch = os.environ.get("GITHUB_REF_NAME") or os.environ.get("GITHUB_HEAD_REF")
+    if not branch:
+        raise RuntimeError("PR_BRANCH not set and could not infer branch name for push.")
+    return branch
+
+
 # =========================
 # GitHub Tool
 # =========================
@@ -68,7 +92,7 @@ class GitHubTool:
         self.token = os.environ["GITHUB_TOKEN"]
         self.repo = os.environ["REPO"]  # e.g. owner/repo
         self.run_id = os.environ.get("RUN_ID")  # present for workflow_run, not for issue_comment
-        self.pr_number = os.environ.get("PR_NUMBER")  # can be provided for issue_comment apply job
+        self.pr_number = os.environ.get("PR_NUMBER")  # provided for issue_comment apply job
         self.headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
@@ -109,7 +133,6 @@ class GitHubTool:
             for r in runs:
                 if r.get("head_sha") != head_sha:
                     continue
-                # Match your CI workflow name if possible
                 name = (r.get("name") or "").lower()
                 if "ci" not in name:
                     continue
@@ -118,7 +141,6 @@ class GitHubTool:
                     break
 
             if not chosen:
-                # fallback: take most recent run with same sha even if not named "CI"
                 for r in runs:
                     if r.get("head_sha") == head_sha and r.get("conclusion") == "failure":
                         chosen = r
@@ -178,14 +200,18 @@ class FilesystemTool:
         dep = dependency.strip()
         lines = [l.strip() for l in content.splitlines() if l.strip()]
 
-        # already present?
         if dep in lines:
             return
 
-        # Ensure newline, add exactly one clean line
         if not content.endswith("\n"):
             content += "\n"
         req.write_text(content + dep + "\n")
+
+    def create_placeholder_file(self, rel_path: str):
+        p = Path(rel_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.exists():
+            p.write_text("")  # empty placeholder
 
 
 # =========================
@@ -198,46 +224,67 @@ class CIFixAgent:
 
     def run(self):
         logs = self.github.get_ci_logs()
-        dep = find_missing_dependency(logs)
 
-        if not dep:
-            self.github.post_pr_comment("🤖 CI Janitor: couldn't find a missing dependency pattern in the logs.")
-            return
+        dep = find_missing_dependency(logs)
+        missing_path = find_missing_file_path(logs)
 
         approved = os.environ.get("CI_JANITOR_APPROVED", "0") == "1"
+        approved_create_file = os.environ.get("CI_JANITOR_APPROVED_CREATE_FILE", "0") == "1"
+        excerpt = make_log_excerpt(logs)
 
-        if not approved:
-            # Keep comment SMALL; optional collapsed excerpt
-            excerpt = make_log_excerpt(logs)
-            comment = (
-                f"🤖 **CI Janitor**\n\n"
-                f"Found missing dependency `{dep}`.\n\n"
-                f"**Proposed change:** add `{dep}` to `requirements.txt`.\n\n"
-                f"Reply with `/ci-janitor approve` to apply the fix.\n\n"
-                f"<details><summary>Log excerpt</summary>\n\n"
-                f"```text\n{excerpt}\n```\n"
-                f"</details>"
-            )
-            self.github.post_pr_comment(comment)
+        # ---- Case 1: Missing dependency ----
+        if dep:
+            if not approved:
+                comment = (
+                    f"🤖 **CI Janitor**\n\n"
+                    f"Found missing dependency `{dep}`.\n\n"
+                    f"**Proposed change:** add `{dep}` to `requirements.txt`.\n\n"
+                    f"Reply with `/ci-janitor approve` to apply the fix.\n\n"
+                    f"<details><summary>Log excerpt</summary>\n\n"
+                    f"```text\n{excerpt}\n```\n"
+                    f"</details>"
+                )
+                self.github.post_pr_comment(comment)
+                return
+
+            # Approved: apply fix
+            self.fs.add_dependency(dep)
+            branch = get_branch_name()
+            commit_and_push_fix(f"ci-fix: add missing dependency {dep}", branch)
+            self.github.post_pr_comment(f"🤖 CI Janitor: added `{dep}` to `requirements.txt` and pushed a fix.")
+            print(f"✔ Fixed and committed missing dependency: {dep}")
             return
 
-        # Approved: actually apply and push
-        self.fs.add_dependency(dep)
+        # ---- Case 2: Missing file path ----
+        if missing_path:
+            if not approved_create_file:
+                comment = (
+                    f"🤖 **CI Janitor**\n\n"
+                    f"Detected missing file path (FileNotFoundError): `{missing_path}`.\n\n"
+                    f"Auto-fixing paths is ambiguous, but I can create a **placeholder file**.\n\n"
+                    f"Reply with `/ci-janitor approve-create-file` to create `{missing_path}`.\n\n"
+                    f"<details><summary>Log excerpt</summary>\n\n"
+                    f"```text\n{excerpt}\n```\n"
+                    f"</details>"
+                )
+                self.github.post_pr_comment(comment)
+                return
 
-        branch = os.environ.get("PR_BRANCH")
-        if not branch:
-            # For issue_comment path, checkout is already on the PR head branch,
-            # and push will work if we just push HEAD to the current branch name.
-            # But we still need the branch name. Try GITHUB_REF_NAME.
-            branch = os.environ.get("GITHUB_REF_NAME") or os.environ.get("GITHUB_HEAD_REF")
+            # Approved: create placeholder file
+            self.fs.create_placeholder_file(missing_path)
+            branch = get_branch_name()
+            commit_and_push_fix(f"ci-fix: create placeholder file {missing_path}", branch)
+            self.github.post_pr_comment(f"🤖 CI Janitor: created placeholder `{missing_path}` and pushed a fix.")
+            print(f"✔ Created placeholder file: {missing_path}")
+            return
 
-        if not branch:
-            raise RuntimeError("PR_BRANCH not set and could not infer branch name for push.")
-
-        commit_and_push_fix(dep, branch)
-
-        self.github.post_pr_comment(f"🤖 CI Janitor: added `{dep}` to `requirements.txt` and pushed a fix.")
-        print(f"✔ Fixed and committed missing dependency: {dep}")
+        # ---- Unknown ----
+        self.github.post_pr_comment(
+            "🤖 CI Janitor: I couldn't match this failure to a known fix rule yet.\n\n"
+            "<details><summary>Log excerpt</summary>\n\n"
+            f"```text\n{excerpt}\n```\n"
+            "</details>"
+        )
 
 
 # =========================

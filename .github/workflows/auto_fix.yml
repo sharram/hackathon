@@ -27,6 +27,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           REPO: ${{ github.repository }}
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-        run: |
-          python agent.py
+        run:

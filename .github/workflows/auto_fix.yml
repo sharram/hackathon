@@ -22,6 +22,11 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Debug GITHUB_TOKEN
+        run: |
+          echo "Token length: ${#GITHUB_TOKEN}"
+
+
       - name: Run Fix Agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
